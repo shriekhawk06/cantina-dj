@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cantina DJ — TV</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="bg-orbs"></div>
+<div class="scanlines"></div>
+
+<div class="tv" id="tvRoot">
+  <header class="visor" style="margin:0 0 10px;">
+    <h1>CANTINA <span class="accent">DJ</span></h1>
+    <p id="roomName">Loading…</p>
+  </header>
+
+  <div id="liveView" class="hidden" style="display:flex;flex-direction:column;flex:1;">
+    <div class="tv-main">
+      <div class="tv-now" style="flex:1;min-width:280px;">
+        <div id="npBlock"></div>
+        <div class="tv-next">
+          <h3 style="font-size:13px;letter-spacing:3px;color:var(--green);text-transform:uppercase;">Up next</h3>
+          <div id="upNext"></div>
+        </div>
+      </div>
+      <div class="tv-side panel">
+        <h3>Join the party</h3>
+        <div class="qr-box tv-qr"><canvas id="qr" width="230" height="230"></canvas></div>
+        <div class="tv-code" id="roomCode"></div>
+        <div class="tv-url" id="joinUrl"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="idleView" class="tv-idle">
+    <h2 style="letter-spacing:4px;">WAITING FOR THE CANTINA TO OPEN…</h2>
+    <p class="hint">The host hasn't started the music yet.</p>
+  </div>
+
+  <div id="wrappedView" class="hidden">
+    <div class="wrapped-hero"><div class="big">PARTY <span style="color:var(--green-bright)">WRAPPED</span></div></div>
+    <div id="wrappedBody"></div>
+  </div>
+</div>
+
+<script src="/vendor/qrcode.min.js"></script>
+<script src="/js/common.js"></script>
+<script>
+(function () {
+  'use strict';
+  const { esc, roomCode, connectRoom, renderQR } = window.Cantina;
+  const code = roomCode();
+  const $ = (id) => document.getElementById(id);
+
+  if (!code) {
+    $('roomName').textContent = 'Missing room code';
+    return;
+  }
+
+  function onState(state) {
+    $('roomName').textContent = `${state.name} · ${state.code}`;
+    $('roomCode').textContent = state.code;
+    $('joinUrl').textContent = state.joinUrl;
+    renderQR($('qr'), state.joinUrl);
+
+    if (state.ended && state.wrapped) {
+      $('liveView').classList.add('hidden');
+      $('idleView').classList.add('hidden');
+      $('wrappedView').classList.remove('hidden');
+      const w = state.wrapped;
+      const row = (k, v, s) => `<div class="stat-card"><div class="v">${esc(v)}</div><div class="k">${k}</div>${s ? `<div class="s">${esc(s)}</div>` : ''}</div>`;
+      $('wrappedBody').innerHTML = `
+        <div class="stat-grid" style="grid-template-columns:repeat(4,1fr);">
+          ${row('Tracks played', w.totalTracksPlayed)}
+          ${row('Requests', w.totalRequests)}
+          ${row('Votes', w.totalVotes)}
+          ${row('Credits bribed', w.totalBribeCredits)}
+          ${row('Most requested', w.mostRequested ? w.mostRequested.count + '×' : '—', w.mostRequested && w.mostRequested.label)}
+          ${row('Top requester', w.topRequester ? w.topRequester.count + ' req' : '—', w.topRequester && w.topRequester.label)}
+          ${row('Most vetoed', w.mostVetoed ? w.mostVetoed.count + '×' : '—', w.mostVetoed && w.mostVetoed.label)}
+          ${row('Guests', w.guestCount)}
+        </div>`;
+      return;
+    }
+
+    const np = state.nowPlaying;
+    if (np && np.track) {
+      $('liveView').classList.remove('hidden');
+      $('idleView').classList.add('hidden');
+      const d = np.dedications && np.dedications[0];
+      $('npBlock').innerHTML = `
+        <div style="display:flex;gap:28px;align-items:center;flex-wrap:wrap;">
+          ${np.track.art ? `<img class="tv-art" src="${esc(np.track.art)}" alt="">` : ''}
+          <div>
+            <div class="t tv-now-t" style="font-size:clamp(34px,5vw,64px);font-weight:800;line-height:1.05;">${esc(np.track.name)}</div>
+            <div class="a" style="font-size:clamp(20px,3vw,34px);color:var(--muted);margin-top:6px;">${esc(np.track.artistNames)}</div>
+            <div class="by" style="margin-top:10px;color:var(--muted);letter-spacing:2px;text-transform:uppercase;font-size:14px;">
+              ${np.autoDj ? 'Auto-DJ' : 'Requested by ' + esc(np.requestedBy)}
+            </div>
+            ${d ? `<div class="dedication" style="font-size:18px;max-width:520px;"><b>${esc(d.from)}:</b> ${esc(d.message)}</div>` : ''}
+          </div>
+        </div>`;
+    } else {
+      $('liveView').classList.remove('hidden');
+      $('idleView').classList.add('hidden');
+      $('npBlock').innerHTML = '<div class="tv-idle"><h2>QUEUE THE FIRST TRACK…</h2></div>';
+    }
+
+    $('upNext').innerHTML = state.queue.slice(0, 5).map((item, i) => `
+      <div class="track">
+        <div class="meta" style="display:flex;gap:12px;align-items:center;">
+          <span style="font-size:22px;font-weight:800;color:var(--green);width:28px;">${i + 1}</span>
+          ${item.track.art ? `<img class="art" src="${esc(item.track.art)}" alt="" loading="lazy">` : ''}
+          <div><div class="t">${esc(item.track.name)}</div><div class="a">${esc(item.track.artistNames)}</div></div>
+        </div>
+        <span class="badge votes">${item.votes} votes</span>
+      </div>`).join('') || '<div class="empty">Nothing queued.</div>';
+  }
+
+  connectRoom(code, 'tv', {}, onState, () => {});
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cantina DJ — Start your cantina</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="bg-orbs"></div>
+<div class="scanlines"></div>
+
+<div class="wrap">
+  <header class="visor">
+    <h1>CANTINA <span class="accent">DJ</span></h1>
+    <p>Party DJ &middot; Hosted by you</p>
+  </header>
+
+  <div class="panel center">
+    <h2>Start your cantina</h2>
+    <p class="hint">Log in with Spotify, open your cantina, and let your guests request and vote on the music — while you keep the veto.</p>
+    <div class="mt"><button class="btn btn-primary btn-block" id="startBtn">Start your cantina</button></div>
+    <p class="hint mt">Host needs <b>Spotify Premium</b> and the Spotify app open on a device.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Join a cantina</h2>
+    <label class="lbl" for="code">Room code</label>
+    <input class="field" id="code" maxlength="6" placeholder="e.g. K7Q2XD" autocapitalize="characters" autocomplete="off">
+    <button class="btn btn-block" id="joinBtn">Join the party</button>
+    <p class="hint mt center" id="joinHint"></p>
+  </div>
+
+  <div class="panel">
+    <h2>How it works</h2>
+    <p class="hint">
+      <b>1.</b> The host logs in with Spotify and opens a cantina.<br>
+      <b>2.</b> Guests scan the QR or open the link — no login needed.<br>
+      <b>3.</b> Guests search, request, vote, and bribe tracks up the queue.<br>
+      <b>4.</b> The host's vote counts <b>10x</b> and the veto is absolute.
+    </p>
+  </div>
+</div>
+
+<script src="/js/common.js"></script>
+<script>
+(function () {
+  const { api, toast, esc } = window.Cantina;
+
+  document.getElementById('startBtn').addEventListener('click', async () => {
+    try {
+      const me = await api('/api/me');
+      location.href = me.loggedIn ? '/host.html' : '/login';
+    } catch (e) {
+      location.href = '/login';
+    }
+  });
+
+  const codeInput = document.getElementById('code');
+  const hint = document.getElementById('joinHint');
+  document.getElementById('joinBtn').addEventListener('click', async () => {
+    const code = codeInput.value.trim().toUpperCase();
+    if (code.length < 4) { toast('Enter the room code from the host', true); return; }
+    try {
+      const room = await api(`/api/rooms/${encodeURIComponent(code)}`);
+      if (room.ended) { hint.textContent = 'That cantina has ended.'; return; }
+      location.href = `/guest.html?code=${encodeURIComponent(code)}`;
+    } catch (e) {
+      hint.textContent = 'Cantina not found. Check the code.';
+    }
+  });
+  codeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('joinBtn').click();
+  });
+})();
+</script>
+</body>
+</html>

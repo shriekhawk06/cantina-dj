@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cantina DJ — Guest</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="bg-orbs"></div>
+<div class="scanlines"></div>
+
+<div class="wrap">
+  <header class="visor">
+    <h1>CANTINA <span class="accent">DJ</span></h1>
+    <p id="roomName">Guest deck</p>
+  </header>
+
+  <!-- Join -->
+  <div class="panel" id="joinView">
+    <h2>Join the cantina</h2>
+    <label class="lbl" for="name">Your name</label>
+    <input class="field" id="name" maxlength="24" placeholder="What should the DJ call you?" autocomplete="off">
+    <button class="btn btn-primary btn-block" id="joinBtn">Enter the cantina</button>
+    <p class="hint mt center" id="joinHint"></p>
+  </div>
+
+  <!-- Room -->
+  <div id="roomView" class="hidden">
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+        <h2 style="margin:0;">Now playing</h2>
+        <span class="credits-pill" id="creditsPill" title="Party credits">0</span>
+      </div>
+      <div id="nowPlaying" class="mt"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Request a track</h2>
+      <div class="search-row">
+        <input class="field" id="search" placeholder="Search Spotify…" autocomplete="off">
+        <button class="btn btn-sm" id="searchBtn" aria-label="Search"></button>
+      </div>
+      <div id="results" class="mt"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Up next <span class="dim" id="queueCount"></span></h2>
+      <div id="queue"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Party crew</h2>
+      <div id="guests"></div>
+    </div>
+  </div>
+
+  <!-- Wrapped -->
+  <div class="panel hidden" id="wrappedView">
+    <div class="wrapped-hero">
+      <div class="big">CANTINA <span style="color:var(--green-bright)">CLOSED</span></div>
+      <p class="hint">The night is over. The legend remains.</p>
+    </div>
+    <div id="wrappedBody"></div>
+    <div class="mt center"><a class="btn btn-ghost" href="/">Back to base</a></div>
+  </div>
+</div>
+
+<script src="/js/common.js"></script>
+<script>
+(function () {
+  'use strict';
+  const { esc, fmtMs, icons, api, guestId, roomCode, connectRoom, toast, debounce } = window.Cantina;
+  const code = roomCode();
+  const gid = guestId();
+  let socket = null;
+  let myCredits = 0;
+  let votedQids = new Set();
+
+  const $ = (id) => document.getElementById(id);
+  document.getElementById('searchBtn').innerHTML = icons.search;
+
+  if (!code) {
+    $('joinHint').textContent = 'Missing room code. Ask the host for the link.';
+  } else {
+    try {
+      const saved = localStorage.getItem('cantina_name_' + code);
+      if (saved) $('name').value = saved;
+    } catch { /* ignore */ }
+  }
+
+  function trackRow(t, opts) {
+    opts = opts || {};
+    return `
+      <div class="track">
+        ${t.art ? `<img class="art" src="${esc(t.art)}" alt="" loading="lazy">` : ''}
+        <div class="meta">
+          <div class="t">${esc(t.name)}</div>
+          <div class="a">${esc(t.artistNames)}</div>
+          <div class="sub">
+            ${t.explicit ? '<span class="badge explicit">Explicit</span>' : ''}
+            <span>${fmtMs(t.durationMs)}</span>
+            ${opts.extra || ''}
+          </div>
+        </div>
+        <div class="actions">${opts.actions || ''}</div>
+      </div>`;
+  }
+
+  function renderNowPlaying(np) {
+    const el = $('nowPlaying');
+    if (!np || !np.track) { el.innerHTML = '<div class="empty">Nothing playing yet. Request something!</div>'; return; }
+    const d = np.dedications && np.dedications[0];
+    el.innerHTML = `
+      <div class="np">
+        ${np.track.art ? `<img class="art" src="${esc(np.track.art)}" alt="">` : ''}
+        <div class="t">${esc(np.track.name)}</div>
+        <div class="a">${esc(np.track.artistNames)}</div>
+        <div class="by">${np.autoDj ? 'Auto-DJ' : 'Requested by ' + esc(np.requestedBy)}${np.external ? ' · outside the queue' : ''}</div>
+        ${d ? `<div class="dedication"><b>${esc(d.from)}:</b> ${esc(d.message)}</div>` : ''}
+      </div>`;
+  }
+
+  function renderQueue(state) {
+    const q = $('queue');
+    $('queueCount').textContent = state.queue.length ? `· ${state.queue.length}` : '';
+    if (!state.queue.length) { q.innerHTML = '<div class="empty">Queue is empty. The floor is yours.</div>'; return; }
+    q.innerHTML = state.queue.map((item) => {
+      const voted = votedQids.has(item.qid);
+      const ded = item.dedications.map((d) =>
+        `<div class="dedication"><b>${esc(d.from)}:</b> ${esc(d.message)}</div>`).join('');
+      return `
+        <div class="track">
+          ${item.track.art ? `<img class="art" src="${esc(item.track.art)}" alt="" loading="lazy">` : ''}
+          <div class="meta">
+            <div class="t">${esc(item.track.name)}</div>
+            <div class="a">${esc(item.track.artistNames)}</div>
+            <div class="sub">
+              <span class="badge votes">${item.votes} vote${item.votes === 1 ? '' : 's'}</span>
+              ${item.bribeCredits ? `<span class="badge boost">+${esc(item.bribeCredits)} bribed</span>` : ''}
+              ${item.autoDj ? '<span class="badge auto">Auto-DJ</span>' : ''}
+              <span>by ${esc(item.requestedBy)}</span>
+            </div>
+            ${ded}
+          </div>
+          <div class="actions" style="flex-direction:column;align-items:stretch;">
+            <button class="icon-btn ${voted ? 'on' : ''}" data-vote="${item.qid}" title="${voted ? 'Unvote' : 'Vote'}">${icons.star}</button>
+            <div style="display:flex;gap:4px;justify-content:center;">
+              ${[10, 25, 50].map((a) =>
+                `<button class="icon-btn gold" style="width:36px;height:36px;font-size:11px;font-weight:800;" data-bribe="${item.qid}" data-amt="${a}" title="Bribe ${a} credits">+${a}</button>`
+              ).join('')}
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+
+    q.querySelectorAll('[data-vote]').forEach((b) =>
+      b.addEventListener('click', () => socket.send({ t: 'vote', guestId: gid, qid: b.dataset.vote })));
+    q.querySelectorAll('[data-bribe]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const amt = Number(b.dataset.amt);
+        if (myCredits < amt) { toast('Not enough credits', true); return; }
+        socket.send({ t: 'bribe', guestId: gid, qid: b.dataset.bribe, amount: amt });
+      }));
+  }
+
+  function renderGuests(state) {
+    $('guests').innerHTML = (state.guests || []).map((g) =>
+      `<div class="guest-row"><span>${esc(g.name)}</span><span class="credits">${esc(g.credits)} cr</span></div>`
+    ).join('') || '<div class="empty">Just you. For now.</div>';
+  }
+
+  function renderWrapped(w) {
+    $('roomView').classList.add('hidden');
+    $('wrappedView').classList.remove('hidden');
+    const row = (k, v, s) => `<div class="stat-card"><div class="v">${esc(v)}</div><div class="k">${k}</div>${s ? `<div class="s">${esc(s)}</div>` : ''}</div>`;
+    $('wrappedBody').innerHTML = `
+      <div class="stat-grid">
+        ${row('Tracks played', w.totalTracksPlayed)}
+        ${row('Requests', w.totalRequests)}
+        ${row('Votes cast', w.totalVotes)}
+        ${row('Credits bribed', w.totalBribeCredits)}
+        ${row('Most requested', w.mostRequested ? w.mostRequested.count + '×' : '—', w.mostRequested && w.mostRequested.label)}
+        ${row('Top requester', w.topRequester ? w.topRequester.count + ' req' : '—', w.topRequester && w.topRequester.label)}
+        ${row('Most vetoed', w.mostVetoed ? w.mostVetoed.count + '×' : '—', w.mostVetoed && w.mostVetoed.label)}
+        ${row('Party crew', w.guestCount)}
+      </div>
+      ${w.topDedications && w.topDedications.length ? `<h3 class="mt">Top dedications</h3>` + w.topDedications.map((d) =>
+        `<div class="dedication"><b>${esc(d.from)}</b> on <i>${esc(d.track)}</i>: ${esc(d.message)}</div>`).join('') : ''}`;
+  }
+
+  function onState(state) {
+    if (state.ended && state.wrapped) { renderWrapped(state.wrapped); return; }
+    document.getElementById('roomName').textContent = state.name + ' · ' + state.code;
+    votedQids = new Set(state.votedQids || []);
+    if (state.you) {
+      myCredits = state.you.credits;
+      $('creditsPill').innerHTML = `${icons.bolt} ${state.you.credits}`;
+    }
+    renderNowPlaying(state.nowPlaying);
+    renderQueue(state);
+    renderGuests(state);
+  }
+
+  // --- search ---
+  const doSearch = debounce(async () => {
+    const q = $('search').value.trim();
+    if (q.length < 2 || !socket) { $('results').innerHTML = ''; return; }
+    try {
+      const data = await api(`/api/rooms/${encodeURIComponent(code)}/search?q=${encodeURIComponent(q)}`);
+      $('results').innerHTML = data.tracks.length
+        ? data.tracks.map((t, i) => trackRow(t, {
+            actions: `<button class="icon-btn" data-req="${i}" title="Request">${icons.plus}</button>`,
+          })).join('')
+        : '<div class="empty">No tracks found.</div>';
+      const tracks = data.tracks;
+      $('results').querySelectorAll('[data-req]').forEach((b) =>
+        b.addEventListener('click', () => {
+          const t = tracks[Number(b.dataset.req)];
+          const dedication = prompt('Add a dedication? (optional, 140 chars)') || '';
+          socket.send({ t: 'request', guestId: gid, track: t, dedication: dedication.slice(0, 140) });
+          $('results').innerHTML = '';
+          $('search').value = '';
+          toast('Request sent to the DJ');
+        }));
+    } catch (e) {
+      $('results').innerHTML = '<div class="empty">Search unavailable right now.</div>';
+    }
+  }, 350);
+
+  $('search').addEventListener('input', doSearch);
+  $('searchBtn').addEventListener('click', doSearch);
+
+  // --- join ---
+  $('joinBtn').addEventListener('click', async () => {
+    const name = $('name').value.trim().slice(0, 24) || 'Guest';
+    if (!code) { toast('Missing room code', true); return; }
+    try {
+      const room = await api(`/api/rooms/${encodeURIComponent(code)}`);
+      if (room.ended) { $('joinHint').textContent = 'That cantina has ended.'; return; }
+      try { localStorage.setItem('cantina_name_' + code, name); } catch { /* ignore */ }
+      $('joinView').classList.add('hidden');
+      $('roomView').classList.remove('hidden');
+      socket = connectRoom(code, 'guest', { guestId: gid, name }, onState,
+        (m) => toast(m, true));
+    } catch (e) {
+      $('joinHint').textContent = 'Cantina not found. Check the code.';
+    }
+  });
+  $('name').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('joinBtn').click(); });
+})();
+</script>
+</body>
+</html>

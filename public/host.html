@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cantina DJ — Host deck</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="bg-orbs"></div>
+<div class="scanlines"></div>
+
+<div class="wrap">
+  <header class="visor">
+    <h1>CANTINA <span class="accent">DJ</span></h1>
+    <p id="roomName">Host deck</p>
+  </header>
+
+  <!-- Create -->
+  <div class="panel" id="createView">
+    <h2>Open a cantina</h2>
+    <label class="lbl" for="cantinaName">Cantina name</label>
+    <input class="field" id="cantinaName" maxlength="60" placeholder="e.g. Mos Eisley Afterparty" autocomplete="off">
+    <button class="btn btn-primary btn-block" id="createBtn">Open the cantina</button>
+    <p class="hint mt">You need <b>Spotify Premium</b> and the Spotify app open on one of your devices. Playback is controlled on your active Spotify device.</p>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashView" class="hidden">
+    <div class="panel center">
+      <h2>Guests join here</h2>
+      <div class="code-big" id="roomCode"></div>
+      <a class="join-link" id="joinLink" href="#"></a>
+      <div class="qr-box"><canvas id="qr" width="220" height="220"></canvas></div>
+      <div class="btn-row">
+        <button class="btn btn-ghost btn-sm" id="copyBtn">Copy link</button>
+        <a class="btn btn-ghost btn-sm" id="tvLink" href="#" target="_blank" rel="noopener">TV mode</a>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Now playing</h2>
+      <div id="nowPlaying"></div>
+      <div class="controls">
+        <button class="icon-btn main" id="playPauseBtn" title="Play / pause"></button>
+        <button class="icon-btn" id="skipBtn" title="Skip"></button>
+        <button class="icon-btn danger" id="vetoNowBtn" title="Veto + ban current track"></button>
+      </div>
+      <p class="hint mt">Veto skips the track <b>and bans it</b> for the rest of the night.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Spotify device</h2>
+      <div id="devices"><p class="hint">Loading devices…</p></div>
+      <p class="hint">Music plays on your <b>active Spotify device</b>. Open Spotify on your phone or computer and start playing anything once, then control it from here.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Add tracks <span class="dim">· host</span></h2>
+      <div class="search-row">
+        <input class="field" id="search" placeholder="Search Spotify…" autocomplete="off">
+        <button class="btn btn-sm" id="searchBtn" aria-label="Search"></button>
+      </div>
+      <div id="results" class="mt"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Queue <span class="dim" id="queueCount"></span></h2>
+      <div id="queue"></div>
+    </div>
+
+    <div class="panel">
+      <div class="toggle-row">
+        <div><div class="lab">Explicit filter</div><div class="desc">Block explicit tracks from search and skip them in the queue.</div></div>
+        <label class="toggle"><input type="checkbox" id="explicitToggle"><span class="sl"></span></label>
+      </div>
+      <div class="toggle-row">
+        <div><div class="lab">Auto-DJ</div><div class="desc">When the queue runs dry, queue a similar track automatically.</div></div>
+        <label class="toggle"><input type="checkbox" id="autodjToggle" checked><span class="sl"></span></label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Party crew <span class="dim" id="guestCount"></span></h2>
+      <div id="guests"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Blacklist</h2>
+      <div id="blacklist"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Room stats</h2>
+      <div class="rail" id="statsRail"></div>
+      <button class="btn btn-danger btn-block mt" id="endBtn">End cantina &amp; show Party Wrapped</button>
+    </div>
+  </div>
+
+  <!-- Wrapped -->
+  <div class="panel hidden" id="wrappedView">
+    <div class="wrapped-hero">
+      <div class="big">PARTY <span style="color:var(--green-bright)">WRAPPED</span></div>
+      <p class="hint" id="wrappedSub"></p>
+    </div>
+    <div id="wrappedBody"></div>
+    <div class="btn-row mt">
+      <a class="btn btn-ghost" href="/host.html">Open a new cantina</a>
+      <a class="btn btn-ghost" href="/">Base</a>
+    </div>
+  </div>
+</div>
+
+<script src="/vendor/qrcode.min.js"></script>
+<script src="/js/common.js"></script>
+<script>
+(function () {
+  'use strict';
+  const { esc, fmtMs, icons, api, roomCode, connectRoom, renderQR, toast, copyText, debounce } = window.Cantina;
+  const $ = (id) => document.getElementById(id);
+  $('searchBtn').innerHTML = icons.search;
+  $('playPauseBtn').innerHTML = icons.play;
+  $('skipBtn').innerHTML = icons.skip;
+  $('vetoNowBtn').innerHTML = icons.ban;
+  $('copyBtn').insertAdjacentHTML('afterbegin', icons.link);
+
+  let code = roomCode();
+  let socket = null;
+  let isPlaying = false;
+  let progressMs = 0, durationMs = 0, lastTick = 0;
+
+  // Smooth progress bar between server polls.
+  setInterval(() => {
+    const bar = document.getElementById('npProgress');
+    if (!bar || !durationMs) return;
+    if (isPlaying) progressMs = Math.min(durationMs, progressMs + (Date.now() - lastTick));
+    lastTick = Date.now();
+    bar.style.width = (progressMs / durationMs * 100).toFixed(1) + '%';
+    const t = document.getElementById('npTime');
+    if (t) t.textContent = `${fmtMs(progressMs)} / ${fmtMs(durationMs)}`;
+  }, 1000);
+
+  async function boot() {
+    let me;
+    try { me = await api('/api/me'); } catch { me = { loggedIn: false }; }
+    if (!me.loggedIn) { location.href = '/login'; return; }
+    if (code) openDashboard(code);
+  }
+
+  $('createBtn').addEventListener('click', async () => {
+    const name = $('cantinaName').value.trim() || 'Untitled Cantina';
+    try {
+      const room = await api('/api/rooms', { method: 'POST', body: JSON.stringify({ name }) });
+      history.replaceState(null, '', `/host.html?code=${room.code}`);
+      openDashboard(room.code);
+    } catch (e) {
+      toast('Could not open cantina', true);
+    }
+  });
+
+  function openDashboard(c) {
+    code = c;
+    $('createView').classList.add('hidden');
+    $('dashView').classList.remove('hidden');
+    socket = connectRoom(code, 'host', {}, onState, (m) => toast(m, true));
+    loadDevices();
+  }
+
+  async function loadDevices() {
+    try {
+      const { devices } = await api('/api/host/devices');
+      $('devices').innerHTML = devices.length
+        ? devices.map((d) => `<div class="guest-row"><span>${esc(d.name)} <span class="hint">· ${esc(d.type)}</span></span>${d.is_active ? '<span class="badge auto">Active</span>' : ''}</div>`).join('')
+        : '<p class="hint">No devices found. Open Spotify on your phone or computer first.</p>';
+    } catch {
+      $('devices').innerHTML = '<p class="hint">Could not load devices.</p>';
+    }
+  }
+
+  function trackRow(item) {
+    const t = item.track;
+    const ded = item.dedications.map((d) =>
+      `<div class="dedication"><b>${esc(d.from)}:</b> ${esc(d.message)}</div>`).join('');
+    return `
+      <div class="track">
+        ${t.art ? `<img class="art" src="${esc(t.art)}" alt="" loading="lazy">` : ''}
+        <div class="meta">
+          <div class="t">${esc(t.name)}</div>
+          <div class="a">${esc(t.artistNames)}</div>
+          <div class="sub">
+            <span class="badge votes">${item.votes} votes</span>
+            ${item.bribeCredits ? `<span class="badge boost">+${esc(item.bribeCredits)} bribed</span>` : ''}
+            ${item.autoDj ? '<span class="badge auto">Auto-DJ</span>' : ''}
+            <span>by ${esc(item.requestedBy)}</span>
+          </div>
+          ${ded}
+        </div>
+        <div class="actions" style="flex-wrap:wrap;justify-content:flex-end;max-width:150px;">
+          <button class="icon-btn" data-act="play" data-qid="${item.qid}" title="Play now">${icons.play}</button>
+          <button class="icon-btn ${item.hostVoted ? 'on' : ''}" data-act="hvote" data-qid="${item.qid}" title="Host vote (10x)">${icons.star}</button>
+          <button class="icon-btn" data-act="top" data-qid="${item.qid}" title="Pin to top">${icons.top}</button>
+          <button class="icon-btn" data-act="up" data-qid="${item.qid}" title="Boost">${icons.up}</button>
+          <button class="icon-btn" data-act="down" data-qid="${item.qid}" title="Demote">${icons.down}</button>
+          <button class="icon-btn danger" data-act="veto" data-qid="${item.qid}" title="Veto + ban">${icons.ban}</button>
+          <button class="icon-btn danger" data-act="remove" data-qid="${item.qid}" title="Remove">${icons.x}</button>
+        </div>
+      </div>`;
+  }
+
+  function renderNowPlaying(np) {
+    const el = $('nowPlaying');
+    if (!np || !np.track) {
+      el.innerHTML = '<div class="empty">Nothing playing. Add tracks or let Auto-DJ take over.</div>';
+      isPlaying = false; durationMs = 0;
+      $('playPauseBtn').innerHTML = icons.play;
+      return;
+    }
+    isPlaying = !!np.isPlaying;
+    progressMs = np.progressMs || 0;
+    durationMs = np.track.durationMs || 0;
+    lastTick = Date.now();
+    $('playPauseBtn').innerHTML = np.isPlaying ? icons.pause : icons.play;
+    const d = np.dedications && np.dedications[0];
+    el.innerHTML = `
+      <div class="np">
+        ${np.track.art ? `<img class="art" src="${esc(np.track.art)}" alt="">` : ''}
+        <div class="t">${esc(np.track.name)}</div>
+        <div class="a">${esc(np.track.artistNames)}</div>
+        <div class="by">${np.autoDj ? 'Auto-DJ' : 'Requested by ' + esc(np.requestedBy)}${np.external ? ' · playing outside the queue' : ''}</div>
+        ${d ? `<div class="dedication"><b>${esc(d.from)}:</b> ${esc(d.message)}</div>` : ''}
+        <div class="progress"><i id="npProgress"></i></div>
+        <div class="hint" id="npTime"></div>
+        ${!np.external ? `<div class="btn-row mt">
+          <button class="btn btn-ghost btn-sm" id="banTrackBtn">Ban track</button>
+          <button class="btn btn-ghost btn-sm" id="banArtistBtn">Ban artist</button>
+        </div>` : ''}
+      </div>`;
+    const banT = document.getElementById('banTrackBtn');
+    if (banT) banT.addEventListener('click', () =>
+      socket.send({ t: 'blacklist_add', kind: 'track', id: np.track.id, label: `${np.track.name} — ${np.track.artistNames}` }));
+    const banA = document.getElementById('banArtistBtn');
+    if (banA && np.track.artists[0]) banA.addEventListener('click', () =>
+      socket.send({ t: 'blacklist_add', kind: 'artist', id: np.track.artists[0].id, label: np.track.artists[0].name }));
+  }
+
+  function onState(state) {
+    if (state.ended && state.wrapped) { renderWrapped(state.wrapped); return; }
+    $('roomName').textContent = `${state.name} · host deck`;
+    $('roomCode').textContent = state.code;
+    const joinUrl = state.joinUrl;
+    const jl = $('joinLink');
+    jl.textContent = joinUrl; jl.href = joinUrl;
+    $('tvLink').href = `/tv/${state.code}`;
+    renderQR($('qr'), joinUrl);
+
+    renderNowPlaying(state.nowPlaying);
+
+    $('queueCount').textContent = state.queue.length ? `· ${state.queue.length}` : '';
+    $('queue').innerHTML = state.queue.length
+      ? state.queue.map(trackRow).join('')
+      : '<div class="empty">Queue is empty.</div>';
+    $('queue').querySelectorAll('[data-act]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const { act, qid } = b.dataset;
+        if (act === 'play') socket.send({ t: 'play', qid });
+        else if (act === 'hvote') socket.send({ t: 'host_vote', qid });
+        else if (act === 'top') socket.send({ t: 'move', qid, to: 'top' });
+        else if (act === 'up') socket.send({ t: 'move', qid, dir: 'up' });
+        else if (act === 'down') socket.send({ t: 'move', qid, dir: 'down' });
+        else if (act === 'veto') socket.send({ t: 'veto', qid, ban: true });
+        else if (act === 'remove') socket.send({ t: 'remove', qid });
+      });
+    });
+
+    $('guestCount').textContent = state.guestCount ? `· ${state.guestCount}` : '';
+    $('guests').innerHTML = (state.guests || []).length
+      ? state.guests.map((g) => `<div class="guest-row"><span>${esc(g.name)}</span><span class="credits">${esc(g.credits)} cr</span></div>`).join('')
+      : '<div class="empty">No guests yet. Share the code!</div>';
+
+    const bl = state.blacklist || { tracks: [], artists: [] };
+    const vetoed = state.vetoed || [];
+    $('blacklist').innerHTML =
+      (bl.tracks.map((x) => blacklistRow('track', x)).join('') +
+       bl.artists.map((x) => blacklistRow('artist', x)).join('') +
+       vetoed.map((x) => `<div class="guest-row"><span>${icons.ban} ${esc(x.label)} <span class="hint">· vetoed ×${x.count}</span></span><button class="icon-btn danger" data-unban="track" data-id="${esc(x.id)}" title="Unban">${icons.x}</button></div>`).join(''))
+      || '<div class="empty">Nothing banned. The cantina is merciful.</div>';
+    $('blacklist').querySelectorAll('[data-unban]').forEach((b) =>
+      b.addEventListener('click', () => socket.send({ t: 'blacklist_remove', kind: b.dataset.unban, id: b.dataset.id })));
+
+    const et = $('explicitToggle'), at = $('autodjToggle');
+    if (document.activeElement !== et) et.checked = !!state.explicitFilter;
+    if (document.activeElement !== at) at.checked = !!state.autoDj;
+
+    const s = state.stats || {};
+    $('statsRail').innerHTML = [
+      [s.played || 0, 'Played'], [s.requests || 0, 'Requests'], [s.votes || 0, 'Votes'],
+      [s.bribeCredits || 0, 'Bribed'], [s.vetoes || 0, 'Vetoes'],
+    ].map(([v, k]) => `<div class="cell"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
+  }
+
+  function blacklistRow(kind, x) {
+    return `<div class="guest-row"><span>${kind === 'artist' ? 'Artist' : 'Track'}: ${esc(x.label)}</span><button class="icon-btn danger" data-unban="${kind}" data-id="${esc(x.id)}" title="Unban">${icons.x}</button></div>`;
+  }
+
+  function renderWrapped(w) {
+    $('dashView').classList.add('hidden');
+    $('wrappedView').classList.remove('hidden');
+    $('wrappedSub').textContent = `${w.roomName} · ${w.guestCount} guests · closed`;
+    const row = (k, v, s) => `<div class="stat-card"><div class="v">${esc(v)}</div><div class="k">${k}</div>${s ? `<div class="s">${esc(s)}</div>` : ''}</div>`;
+    $('wrappedBody').innerHTML = `
+      <div class="stat-grid">
+        ${row('Tracks played', w.totalTracksPlayed)}
+        ${row('Requests', w.totalRequests)}
+        ${row('Votes cast', w.totalVotes)}
+        ${row('Credits bribed', w.totalBribeCredits)}
+        ${row('Most requested', w.mostRequested ? w.mostRequested.count + '×' : '—', w.mostRequested && w.mostRequested.label)}
+        ${row('Top requester', w.topRequester ? w.topRequester.count + ' req' : '—', w.topRequester && w.topRequester.label)}
+        ${row('Most vetoed', w.mostVetoed ? w.mostVetoed.count + '×' : '—', w.mostVetoed && w.mostVetoed.label)}
+        ${row('Skips', w.totalVetoes)}
+      </div>
+      ${w.topDedications && w.topDedications.length ? `<h3 class="mt">Top dedications</h3>` + w.topDedications.map((d) =>
+        `<div class="dedication"><b>${esc(d.from)}</b> on <i>${esc(d.track)}</i>: ${esc(d.message)}</div>`).join('') : ''}`;
+    window.scrollTo(0, 0);
+  }
+
+  // --- controls ---
+  $('playPauseBtn').addEventListener('click', () => socket && socket.send({ t: isPlaying ? 'pause' : 'play' }));
+  $('skipBtn').addEventListener('click', () => socket && socket.send({ t: 'skip' }));
+  $('vetoNowBtn').addEventListener('click', () => {
+    if (confirm('Veto the current track and ban it for the night?')) socket && socket.send({ t: 'veto', qid: 'now', ban: true });
+  });
+  $('copyBtn').addEventListener('click', () => copyText($('joinLink').href, 'Join link copied'));
+  $('endBtn').addEventListener('click', () => {
+    if (confirm('End the cantina and show Party Wrapped?')) socket && socket.send({ t: 'end' });
+  });
+  $('explicitToggle').addEventListener('change', (e) => socket && socket.send({ t: 'set_explicit_filter', on: e.target.checked }));
+  $('autodjToggle').addEventListener('change', (e) => socket && socket.send({ t: 'set_autodj', on: e.target.checked }));
+
+  // --- host search & add ---
+  const doSearch = debounce(async () => {
+    const q = $('search').value.trim();
+    if (q.length < 2 || !socket || !code) { $('results').innerHTML = ''; return; }
+    try {
+      const data = await api(`/api/rooms/${encodeURIComponent(code)}/search?q=${encodeURIComponent(q)}`);
+      $('results').innerHTML = data.tracks.length
+        ? data.tracks.map((t, i) => `
+          <div class="track">
+            ${t.art ? `<img class="art" src="${esc(t.art)}" alt="" loading="lazy">` : ''}
+            <div class="meta"><div class="t">${esc(t.name)}</div><div class="a">${esc(t.artistNames)}</div>
+            <div class="sub">${t.explicit ? '<span class="badge explicit">Explicit</span>' : ''}<span>${fmtMs(t.durationMs)}</span></div></div>
+            <div class="actions"><button class="icon-btn" data-add="${i}" title="Add to queue">${icons.plus}</button></div>
+          </div>`).join('')
+        : '<div class="empty">No tracks found.</div>';
+      const tracks = data.tracks;
+      $('results').querySelectorAll('[data-add]').forEach((b) =>
+        b.addEventListener('click', () => {
+          const t = tracks[Number(b.dataset.add)];
+          socket.send({ t: 'request', guestId: 'host', track: t, dedication: '' });
+          toast('Added to the queue');
+        }));
+    } catch { $('results').innerHTML = '<div class="empty">Search unavailable.</div>'; }
+  }, 350);
+  $('search').addEventListener('input', doSearch);
+
+  boot();
+})();
+</script>
+</body>
+</html>
